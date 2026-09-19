@@ -8,15 +8,8 @@ permissions:
 
 jobs:
   build-dawn:
-    # Explicitly select the current Windows Server 2025 image
-    # that contains Visual Studio 2026.
     runs-on: windows-2025-vs2026
     timeout-minutes: 120
-
-    env:
-      # Prevent MinGW/GCC environment variables from affecting CMake.
-      CC: ""
-      CXX: ""
 
     steps:
       - name: Show runner and toolchain
@@ -29,7 +22,6 @@ jobs:
           Write-Host "=== Tools ==="
           git --version
           cmake --version
-          ninja --version
           python --version
 
           Write-Host "=== Visual Studio ==="
@@ -74,9 +66,6 @@ jobs:
       - name: Configure Dawn - Visual Studio 2026 x64
         shell: pwsh
         run: |
-          Remove-Item Env:CC -ErrorAction SilentlyContinue
-          Remove-Item Env:CXX -ErrorAction SilentlyContinue
-
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
           $vsPath = & $vswhere `
@@ -157,25 +146,25 @@ jobs:
             -DTINT_BUILD_TESTS=OFF `
             -DTINT_BUILD_MESA=OFF
 
-      - name: Verify Visual Studio generator
+      - name: Verify CMake generator and compiler
         shell: pwsh
         run: |
+          Write-Host "=== CMake generator ==="
+
           $cache = Get-Content "build-dawn/CMakeCache.txt" -Raw
 
-          Write-Host "=== Selected generator ==="
-          $cache |
-            Select-String "CMAKE_GENERATOR:INTERNAL" |
-            ForEach-Object { Write-Host $_ }
+          $generatorLine = $cache |
+            Select-String "CMAKE_GENERATOR:INTERNAL"
 
-          Write-Host "=== Selected generator instance ==="
-          $cache |
-            Select-String "CMAKE_GENERATOR_INSTANCE" |
-            ForEach-Object { Write-Host $_ }
+          if ($generatorLine) {
+            Write-Host $generatorLine
+          }
 
-          Write-Host "=== Compiler checks ==="
+          $instanceLine = $cache |
+            Select-String "CMAKE_GENERATOR_INSTANCE"
 
-          if ($cache -match "MinGW|mingw64|gcc|g\+\+|c\+\+\.exe") {
-            throw "CMake selected MinGW/GCC. Visual Studio 2026 was expected."
+          if ($instanceLine) {
+            Write-Host $instanceLine
           }
 
           if ($cache -notmatch "Visual Studio 18 2026") {
@@ -183,6 +172,32 @@ jobs:
           }
 
           Write-Host "Visual Studio 18 2026 generator confirmed."
+
+          Write-Host "=== Actual C++ compiler metadata ==="
+
+          $compilerFile = Get-ChildItem `
+            "build-dawn/CMakeFiles" `
+            -Recurse `
+            -Filter "CMakeCXXCompiler.cmake" |
+            Select-Object -First 1
+
+          if (-not $compilerFile) {
+            throw "CMakeCXXCompiler.cmake was not found."
+          }
+
+          Write-Host "Compiler metadata:"
+          Write-Host $compilerFile.FullName
+
+          $compilerInfo = Get-Content $compilerFile.FullName -Raw
+
+          $compilerInfo |
+            Select-String 'CMAKE_CXX_COMPILER_ID|CMAKE_CXX_COMPILER_VERSION|CMAKE_CXX_COMPILER'
+
+          if ($compilerInfo -notmatch 'set\(CMAKE_CXX_COMPILER_ID "MSVC"\)') {
+            throw "CMake did not select the MSVC compiler."
+          }
+
+          Write-Host "MSVC compiler confirmed."
 
       - name: Build Dawn
         shell: pwsh
