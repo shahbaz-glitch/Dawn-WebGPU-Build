@@ -11,60 +11,40 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 120
 
-    env:
-      DEPOT_TOOLS_UPDATE: "0"
-      GIT_TERMINAL_PROMPT: "0"
-
     steps:
-      - name: Show runner and disk state
+      - name: Show runner environment
         shell: pwsh
         run: |
-          Write-Host "=== Runner ==="
-          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
+          Write-Host "=== Windows ==="
+          Get-ComputerInfo |
+            Select-Object WindowsProductName, WindowsVersion, OsArchitecture
 
           Write-Host "=== Tools ==="
           git --version
           cmake --version
           ninja --version
           python --version
+          go version
 
           Write-Host "=== Disk ==="
-          Get-PSDrive -Name C | Select-Object Name, Used, Free
-
-      - name: Get depot_tools
-        shell: pwsh
-        run: |
-          $depot = Join-Path $env:RUNNER_TEMP "depot_tools"
-
-          git clone --depth 1 `
-            https://chromium.googlesource.com/chromium/tools/depot_tools.git `
-            $depot
-
-          Add-Content -Path $env:GITHUB_PATH -Value $depot
-
-          $env:PATH = "$depot;$env:PATH"
-
-          gclient --version
+          Get-PSDrive -Name C |
+            Select-Object Name, Used, Free
 
       - name: Clone Dawn
         shell: pwsh
         run: |
           git clone --depth 1 https://dawn.googlesource.com/dawn.git dawn
+
+          Write-Host "=== Dawn revision ==="
           git -C dawn rev-parse HEAD
-
-      - name: Fetch Dawn dependencies
-        shell: pwsh
-        run: |
-          Set-Location dawn
-
-          Copy-Item scripts/standalone.gclient .gclient -Force
-
-          gclient sync
 
       - name: Configure Dawn - CMake / Ninja
         shell: pwsh
         run: |
-          cmake -S dawn -B build-dawn -G Ninja -DCMAKE_BUILD_TYPE=Release `
+          cmake -S dawn -B build-dawn -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DDAWN_FETCH_DEPENDENCIES=ON `
+            -DDAWN_ENABLE_INSTALL=ON `
             -DDAWN_ENABLE_D3D12=ON `
             -DDAWN_ENABLE_D3D11=OFF `
             -DDAWN_ENABLE_VULKAN=OFF `
@@ -102,8 +82,6 @@ jobs:
             -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC `
             -DBUILD_SHARED_LIBS=OFF `
             -DDAWN_ENABLE_PIC=ON `
-            -DDAWN_ENABLE_INSTALL=ON `
-            -DDAWN_FETCH_DEPENDENCIES=OFF `
             -DTINT_ENABLE_INSTALL=OFF `
             -DTINT_BUILD_CMD_TOOLS=OFF `
             -DTINT_BUILD_SPV_READER=OFF `
@@ -143,11 +121,11 @@ jobs:
             throw "Missing DawnSDK/lib"
           }
 
-          Write-Host "=== Installed headers ==="
+          Write-Host "=== WebGPU headers ==="
           Get-ChildItem "DawnSDK/include/webgpu" -File |
             Select-Object Name
 
-          Write-Host "=== Installed libraries ==="
+          Write-Host "=== Dawn libraries ==="
           Get-ChildItem "DawnSDK/lib" -File |
             Select-Object Name, Length
 
@@ -182,6 +160,9 @@ jobs:
           GLFW=OFF
           Wayland=OFF
           X11=OFF
+
+          Dependencies:
+          DAWN_FETCH_DEPENDENCIES=ON
 
           Tint:
           WGSL reader=ON
