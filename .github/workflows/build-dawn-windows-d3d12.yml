@@ -1,0 +1,217 @@
+name: Build Dawn - Windows D3D12
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-dawn:
+    runs-on: windows-2025
+    timeout-minutes: 120
+
+    env:
+      DEPOT_TOOLS_UPDATE: "0"
+      GIT_TERMINAL_PROMPT: "0"
+
+    steps:
+      - name: Show runner and disk state
+        shell: pwsh
+        run: |
+          Write-Host "=== Runner ==="
+          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
+
+          Write-Host "=== Tools ==="
+          git --version
+          cmake --version
+          ninja --version
+          python --version
+
+          Write-Host "=== Disk ==="
+          Get-PSDrive -Name C | Select-Object Name, Used, Free
+
+      - name: Get depot_tools
+        shell: pwsh
+        run: |
+          $depot = Join-Path $env:RUNNER_TEMP "depot_tools"
+
+          git clone --depth 1 `
+            https://chromium.googlesource.com/chromium/tools/depot_tools.git `
+            $depot
+
+          Add-Content -Path $env:GITHUB_PATH -Value $depot
+
+          $env:PATH = "$depot;$env:PATH"
+
+          gclient --version
+
+      - name: Clone Dawn
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://dawn.googlesource.com/dawn.git dawn
+          git -C dawn rev-parse HEAD
+
+      - name: Fetch Dawn dependencies
+        shell: pwsh
+        run: |
+          Set-Location dawn
+
+          Copy-Item scripts/standalone.gclient .gclient -Force
+
+          gclient sync
+
+      - name: Configure Dawn - CMake / Ninja
+        shell: pwsh
+        run: |
+          cmake -S dawn -B build-dawn -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DDAWN_ENABLE_D3D12=ON `
+            -DDAWN_ENABLE_D3D11=OFF `
+            -DDAWN_ENABLE_VULKAN=OFF `
+            -DDAWN_ENABLE_METAL=OFF `
+            -DDAWN_ENABLE_DESKTOP_GL=OFF `
+            -DDAWN_ENABLE_OPENGLES=OFF `
+            -DDAWN_ENABLE_NULL=ON `
+            -DDAWN_ENABLE_WEBGPU_ON_WEBGPU=OFF `
+            -DDAWN_ENABLE_SPIRV_VALIDATION=OFF `
+            -DDAWN_USE_WINDOWS_UI=ON `
+            -DDAWN_USE_WAYLAND=OFF `
+            -DDAWN_USE_X11=OFF `
+            -DDAWN_USE_GLFW=OFF `
+            -DDAWN_USE_BUILT_DXC=OFF `
+            -DDAWN_DXC_ENABLE_ASSERTS_IN_NDEBUG=OFF `
+            -DDAWN_USE_AGILITY_SDK=OFF `
+            -DDAWN_ENABLE_SWIFTSHADER=OFF `
+            -DDAWN_BUILD_SAMPLES=OFF `
+            -DDAWN_BUILD_TESTS=OFF `
+            -DDAWN_BUILD_NODE_BINDINGS=OFF `
+            -DDAWN_BUILD_BENCHMARKS=OFF `
+            -DDAWN_BUILD_FUZZERS=OFF `
+            -DDAWN_BUILD_PROTOBUF=OFF `
+            -DDAWN_ENABLE_ASAN=OFF `
+            -DDAWN_ENABLE_TSAN=OFF `
+            -DDAWN_ENABLE_MSAN=OFF `
+            -DDAWN_ENABLE_UBSAN=OFF `
+            -DDAWN_ENABLE_RTTI=OFF `
+            -DDAWN_ALWAYS_ASSERT=OFF `
+            -DDAWN_ENABLE_ERROR_INJECTION=OFF `
+            -DDAWN_WERROR=OFF `
+            -DDAWN_WEVERYTHING=OFF `
+            -DDAWN_EMIT_COVERAGE=OFF `
+            -DDAWN_FORCE_SYSTEM_COMPONENT_LOAD=OFF `
+            -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DDAWN_ENABLE_PIC=ON `
+            -DDAWN_ENABLE_INSTALL=ON `
+            -DDAWN_FETCH_DEPENDENCIES=OFF `
+            -DTINT_ENABLE_INSTALL=OFF `
+            -DTINT_BUILD_CMD_TOOLS=OFF `
+            -DTINT_BUILD_SPV_READER=OFF `
+            -DTINT_BUILD_WGSL_READER=ON `
+            -DTINT_BUILD_GLSL_WRITER=OFF `
+            -DTINT_BUILD_GLSL_VALIDATOR=OFF `
+            -DTINT_BUILD_HLSL_WRITER=ON `
+            -DTINT_BUILD_MSL_WRITER=OFF `
+            -DTINT_BUILD_SPV_WRITER=OFF `
+            -DTINT_BUILD_WGSL_WRITER=ON `
+            -DTINT_BUILD_NULL_WRITER=ON `
+            -DTINT_BUILD_IR_BINARY=OFF `
+            -DTINT_BUILD_FUZZERS=OFF `
+            -DTINT_BUILD_FUZZER_VULKAN_SUPPORT=OFF `
+            -DTINT_BUILD_BENCHMARKS=OFF `
+            -DTINT_BUILD_TESTS=OFF `
+            -DTINT_BUILD_MESA=OFF
+
+      - name: Build Dawn
+        shell: pwsh
+        run: |
+          cmake --build build-dawn --parallel 4
+
+      - name: Install Dawn SDK
+        shell: pwsh
+        run: |
+          cmake --install build-dawn --prefix DawnSDK
+
+      - name: Verify Dawn SDK
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "DawnSDK/include/webgpu/webgpu.h")) {
+            throw "Missing DawnSDK/include/webgpu/webgpu.h"
+          }
+
+          if (-not (Test-Path "DawnSDK/lib")) {
+            throw "Missing DawnSDK/lib"
+          }
+
+          Write-Host "=== Installed headers ==="
+          Get-ChildItem "DawnSDK/include/webgpu" -File |
+            Select-Object Name
+
+          Write-Host "=== Installed libraries ==="
+          Get-ChildItem "DawnSDK/lib" -File |
+            Select-Object Name, Length
+
+          Write-Host "=== Final disk state ==="
+          Get-PSDrive -Name C |
+            Select-Object Name, Used, Free
+
+      - name: Record build manifest
+        shell: pwsh
+        run: |
+          @"
+          Dawn source:
+          $(git -C dawn rev-parse HEAD)
+
+          Build:
+          CMake + Ninja
+          Release
+          Windows / D3D12
+          Static monolithic library
+
+          Backend:
+          D3D12=ON
+          D3D11=OFF
+          Vulkan=OFF
+          Metal=OFF
+          DesktopGL=OFF
+          OpenGLES=OFF
+          Null=ON
+
+          Windowing:
+          WindowsUI=ON
+          GLFW=OFF
+          Wayland=OFF
+          X11=OFF
+
+          Tint:
+          WGSL reader=ON
+          HLSL writer=ON
+          WGSL writer=ON
+          NULL writer=ON
+          SPIR-V reader=OFF
+          SPIR-V writer=OFF
+          GLSL writer=OFF
+          GLSL validator=OFF
+          MSL writer=OFF
+          IR binary=OFF
+
+          Extras:
+          Samples=OFF
+          Tests=OFF
+          Node bindings=OFF
+          Benchmarks=OFF
+          Fuzzers=OFF
+          Protobuf=OFF
+          SwiftShader=OFF
+          Built DXC=OFF
+          Agility SDK=OFF
+          Error injection=OFF
+          "@ | Set-Content DawnSDK/build-manifest.txt -Encoding utf8
+
+      - name: Upload Dawn SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dawn-windows-d3d12-sdk
+          path: DawnSDK
+          if-no-files-found: error
+          compression-level: 6
