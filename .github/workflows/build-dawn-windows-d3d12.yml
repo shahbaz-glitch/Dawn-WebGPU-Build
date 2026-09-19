@@ -8,16 +8,18 @@ permissions:
 
 jobs:
   build-dawn:
-    runs-on: windows-2025
+    # Explicitly select the current Windows Server 2025 image
+    # that contains Visual Studio 2026.
+    runs-on: windows-2025-vs2026
     timeout-minutes: 120
 
     env:
-      # Prevent any preconfigured compiler variables from forcing MinGW.
+      # Prevent MinGW/GCC environment variables from affecting CMake.
       CC: ""
       CXX: ""
 
     steps:
-      - name: Show runner environment
+      - name: Show runner and toolchain
         shell: pwsh
         run: |
           Write-Host "=== Windows ==="
@@ -27,21 +29,35 @@ jobs:
           Write-Host "=== Tools ==="
           git --version
           cmake --version
+          ninja --version
           python --version
-          go version
 
           Write-Host "=== Visual Studio ==="
+
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
           if (-not (Test-Path $vswhere)) {
             throw "vswhere.exe was not found."
           }
 
-          & $vswhere `
+          $vsPath = & $vswhere `
             -latest `
             -products * `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
             -property installationPath
+
+          if (-not $vsPath) {
+            throw "Visual Studio with MSVC x64 tools was not found."
+          }
+
+          Write-Host "Visual Studio path:"
+          Write-Host $vsPath
+
+          if (-not ($vsPath -match "\\Microsoft Visual Studio\\18\\")) {
+            throw "Expected Visual Studio 2026 (version 18) but found: $vsPath"
+          }
+
+          Write-Host "Visual Studio 2026 detected."
 
           Write-Host "=== Disk ==="
           Get-PSDrive -Name C |
@@ -55,24 +71,37 @@ jobs:
           Write-Host "=== Dawn revision ==="
           git -C dawn rev-parse HEAD
 
-      - name: Configure Dawn - MSVC / Visual Studio 2022
+      - name: Configure Dawn - Visual Studio 2026 x64
         shell: pwsh
         run: |
-          # Clear compiler environment variables so MinGW/GCC cannot be selected.
           Remove-Item Env:CC -ErrorAction SilentlyContinue
           Remove-Item Env:CXX -ErrorAction SilentlyContinue
 
-          Write-Host "=== Configure with Visual Studio 2022 x64 ==="
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+
+          $vsPath = & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+
+          if (-not $vsPath) {
+            throw "Visual Studio with MSVC x64 tools was not found."
+          }
+
+          Write-Host "Using Visual Studio instance:"
+          Write-Host $vsPath
 
           cmake `
             -S dawn `
             -B build-dawn `
-            -G "Visual Studio 17 2022" `
+            -G "Visual Studio 18 2026" `
             -A x64 `
+            -DCMAKE_GENERATOR_INSTANCE="$vsPath" `
+            -DCMAKE_CONFIGURATION_TYPES=Release `
             -DDAWN_FETCH_DEPENDENCIES=ON `
             -DDAWN_ENABLE_INSTALL=ON `
             -DCMAKE_INSTALL_PREFIX="$PWD\DawnSDK" `
-            -DCMAKE_CONFIGURATION_TYPES=Release `
             -DDAWN_ENABLE_D3D12=ON `
             -DDAWN_ENABLE_D3D11=OFF `
             -DDAWN_ENABLE_VULKAN=OFF `
@@ -128,34 +157,46 @@ jobs:
             -DTINT_BUILD_TESTS=OFF `
             -DTINT_BUILD_MESA=OFF
 
-      - name: Verify CMake selected MSVC
+      - name: Verify Visual Studio generator
         shell: pwsh
         run: |
-          Write-Host "=== Compiler information from CMake cache ==="
-
           $cache = Get-Content "build-dawn/CMakeCache.txt" -Raw
 
+          Write-Host "=== Selected generator ==="
           $cache |
-            Select-String "CMAKE_CXX_COMPILER:FILEPATH|CMAKE_C_COMPILER:FILEPATH" |
+            Select-String "CMAKE_GENERATOR:INTERNAL" |
             ForEach-Object { Write-Host $_ }
 
-          if ($cache -match "mingw|mingw64|g\+\+|c\+\+\.exe") {
-            throw "CMake selected a MinGW/GCC compiler. MSVC was expected."
+          Write-Host "=== Selected generator instance ==="
+          $cache |
+            Select-String "CMAKE_GENERATOR_INSTANCE" |
+            ForEach-Object { Write-Host $_ }
+
+          Write-Host "=== Compiler checks ==="
+
+          if ($cache -match "MinGW|mingw64|gcc|g\+\+|c\+\+\.exe") {
+            throw "CMake selected MinGW/GCC. Visual Studio 2026 was expected."
           }
 
-          Write-Host "MSVC generator/toolchain check passed."
+          if ($cache -notmatch "Visual Studio 18 2026") {
+            throw "CMake did not select Visual Studio 18 2026."
+          }
+
+          Write-Host "Visual Studio 18 2026 generator confirmed."
 
       - name: Build Dawn
         shell: pwsh
         run: |
-          cmake --build build-dawn `
+          cmake `
+            --build build-dawn `
             --config Release `
             --parallel 4
 
       - name: Install Dawn SDK
         shell: pwsh
         run: |
-          cmake --install build-dawn `
+          cmake `
+            --install build-dawn `
             --config Release `
             --prefix DawnSDK
 
@@ -170,9 +211,9 @@ jobs:
             throw "Missing DawnSDK/lib"
           }
 
-          Write-Host "=== WebGPU headers ==="
-          Get-ChildItem "DawnSDK/include/webgpu" -File |
-            Select-Object Name
+          Write-Host "=== WebGPU header ==="
+          Get-Item "DawnSDK/include/webgpu/webgpu.h" |
+            Select-Object FullName, Length
 
           Write-Host "=== Dawn libraries ==="
           Get-ChildItem "DawnSDK/lib" -File |
@@ -189,16 +230,19 @@ jobs:
           Dawn source:
           $(git -C dawn rev-parse HEAD)
 
-          Build:
-          CMake
-          Visual Studio 2022
+          Platform:
+          Windows Server 2025
+
+          Toolchain:
+          Visual Studio 2026
+          MSVC
           x64
           Release
-          Windows / D3D12
-          Static monolithic library
 
-          Compiler:
-          MSVC / Visual Studio 2022
+          Build:
+          CMake
+          Visual Studio generator
+          Static monolithic library
 
           Backend:
           D3D12=ON
@@ -249,4 +293,4 @@ jobs:
           name: dawn-windows-d3d12-sdk
           path: DawnSDK
           if-no-files-found: error
-          compression-level: 6    
+          compression-level: 6
