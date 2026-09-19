@@ -11,6 +11,11 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 120
 
+    env:
+      # Prevent any preconfigured compiler variables from forcing MinGW.
+      CC: ""
+      CXX: ""
+
     steps:
       - name: Show runner environment
         shell: pwsh
@@ -22,9 +27,21 @@ jobs:
           Write-Host "=== Tools ==="
           git --version
           cmake --version
-          ninja --version
           python --version
           go version
+
+          Write-Host "=== Visual Studio ==="
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+
+          if (-not (Test-Path $vswhere)) {
+            throw "vswhere.exe was not found."
+          }
+
+          & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
 
           Write-Host "=== Disk ==="
           Get-PSDrive -Name C |
@@ -38,13 +55,24 @@ jobs:
           Write-Host "=== Dawn revision ==="
           git -C dawn rev-parse HEAD
 
-      - name: Configure Dawn - CMake / Ninja
+      - name: Configure Dawn - MSVC / Visual Studio 2022
         shell: pwsh
         run: |
-          cmake -S dawn -B build-dawn -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
+          # Clear compiler environment variables so MinGW/GCC cannot be selected.
+          Remove-Item Env:CC -ErrorAction SilentlyContinue
+          Remove-Item Env:CXX -ErrorAction SilentlyContinue
+
+          Write-Host "=== Configure with Visual Studio 2022 x64 ==="
+
+          cmake `
+            -S dawn `
+            -B build-dawn `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
             -DDAWN_FETCH_DEPENDENCIES=ON `
             -DDAWN_ENABLE_INSTALL=ON `
+            -DCMAKE_INSTALL_PREFIX="$PWD\DawnSDK" `
+            -DCMAKE_CONFIGURATION_TYPES=Release `
             -DDAWN_ENABLE_D3D12=ON `
             -DDAWN_ENABLE_D3D11=OFF `
             -DDAWN_ENABLE_VULKAN=OFF `
@@ -100,15 +128,36 @@ jobs:
             -DTINT_BUILD_TESTS=OFF `
             -DTINT_BUILD_MESA=OFF
 
+      - name: Verify CMake selected MSVC
+        shell: pwsh
+        run: |
+          Write-Host "=== Compiler information from CMake cache ==="
+
+          $cache = Get-Content "build-dawn/CMakeCache.txt" -Raw
+
+          $cache |
+            Select-String "CMAKE_CXX_COMPILER:FILEPATH|CMAKE_C_COMPILER:FILEPATH" |
+            ForEach-Object { Write-Host $_ }
+
+          if ($cache -match "mingw|mingw64|g\+\+|c\+\+\.exe") {
+            throw "CMake selected a MinGW/GCC compiler. MSVC was expected."
+          }
+
+          Write-Host "MSVC generator/toolchain check passed."
+
       - name: Build Dawn
         shell: pwsh
         run: |
-          cmake --build build-dawn --parallel 4
+          cmake --build build-dawn `
+            --config Release `
+            --parallel 4
 
       - name: Install Dawn SDK
         shell: pwsh
         run: |
-          cmake --install build-dawn --prefix DawnSDK
+          cmake --install build-dawn `
+            --config Release `
+            --prefix DawnSDK
 
       - name: Verify Dawn SDK
         shell: pwsh
@@ -141,10 +190,15 @@ jobs:
           $(git -C dawn rev-parse HEAD)
 
           Build:
-          CMake + Ninja
+          CMake
+          Visual Studio 2022
+          x64
           Release
           Windows / D3D12
           Static monolithic library
+
+          Compiler:
+          MSVC / Visual Studio 2022
 
           Backend:
           D3D12=ON
@@ -195,4 +249,4 @@ jobs:
           name: dawn-windows-d3d12-sdk
           path: DawnSDK
           if-no-files-found: error
-          compression-level: 6
+          compression-level: 6    
